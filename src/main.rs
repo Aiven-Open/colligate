@@ -72,10 +72,9 @@ fn main() {
                     .filter_entry(|entry| {
                         let entry_path = entry.path().strip_prefix(&layer_dir).unwrap().to_str().unwrap();
                         let metadata = entry.metadata().unwrap_or_else(|_| panic!("Could not stat: path={entry_path}"));
-                        let mode = metadata.st_mode();
-                        let entry_type = mode & libc::S_IFMT;
-                        let is_character_device = (entry_type & libc::S_IFCHR) != 0;
-                        if is_character_device && (metadata.st_rdev() == 0) {
+                        let st_mode = metadata.st_mode();
+                        let type_bits = st_mode & libc::S_IFMT;
+                        if (type_bits == libc::S_IFCHR) && (metadata.st_rdev() == 0) {
                             next_dirs_to_skip.insert(String::from(entry_path));
                             false
                         } else if dirs_to_skip.contains(entry_path) {
@@ -85,16 +84,13 @@ fn main() {
                         } else {
                             entries_count += 1;
                             let mut header = Header::new_gnu();
-                            let mode = metadata.st_mode();
-                            header.set_mode(mode);
+                            let mode_bits = st_mode & 0o7777;
+                            header.set_mode(mode_bits);
                             let uid = metadata.st_uid() as u64;
                             let gid = metadata.st_gid() as u64;
                             header.set_uid(if uid == 1001 { 0 } else { (uid % 65536) + 1 });
                             header.set_gid(if gid == 1001 { 0 } else { (gid % 65536) + 1 });
-                            let is_file = (entry_type & libc::S_IFREG) != 0;
-                            let is_link = (entry_type & libc::S_IFLNK) != 0;
-                            let is_dir = (entry_type & libc::S_IFDIR) != 0;
-                            if is_file {
+                            if type_bits == libc::S_IFREG {
                                 bytes_count += metadata.st_size();
                                 header.set_size(metadata.st_size());
                                 header.set_entry_type(EntryType::Regular);
@@ -103,11 +99,11 @@ fn main() {
                                         .append_data(&mut header, entry_path, file)
                                         .unwrap_or_else(|_| panic!("Could not append file: path={entry_path}"));
                                 } else {
-                                    panic!("Could not read file: uid={uid} gid={gid} mode=Oo{mode:o} path={entry_path}");
+                                    panic!("Could not read file: uid={uid} gid={gid} mode=Oo{mode_bits:o} path={entry_path}");
                                 }
                                 next_dirs_to_skip.insert(String::from(entry_path));
                                 false
-                            } else if is_link {
+                            } else if type_bits == libc::S_IFLNK {
                                 header.set_size(0);
                                 header.set_entry_type(EntryType::Symlink);
                                 let link_target =
@@ -117,7 +113,7 @@ fn main() {
                                     .unwrap_or_else(|_| panic!("Could not append link: path={entry_path}"));
                                 next_dirs_to_skip.insert(String::from(entry_path));
                                 false
-                            } else if is_dir {
+                            } else if type_bits == libc::S_IFDIR {
                                 if !entry_path.is_empty() { // The root dir is enumerated
                                     header.set_size(0);
                                     header.set_entry_type(EntryType::Directory);
@@ -128,7 +124,7 @@ fn main() {
                                 }
                                 true
                             } else {
-                                false
+                                panic!("Unsupported entry: type=0o{type_bits:o} path={entry_path}");
                             }
                         }
                     })
