@@ -119,10 +119,11 @@ fn main() {
             let mut dirs_to_skip = patricia_tree::PatriciaSet::new();
             let mut next_files_to_skip = patricia_tree::PatriciaSet::new();
             let mut next_dirs_to_skip = patricia_tree::PatriciaSet::new();
-
+            let mut hardlinks: HashMap<u64, String> = HashMap::new();
             for layer_dir in [top_layer_diff_dir].into_iter().chain(lower_layer_dirs) {
                 let mut entries_count = 0u64;
                 let mut bytes_count = 0u64;
+                let mut hardlinks_count = 0u64;
                 let layer_start_time = Instant::now();
                 walkdir::WalkDir::new(layer_dir.clone())
                     .sort_by_file_name()
@@ -148,16 +149,30 @@ fn main() {
                             let gid = metadata.st_gid() as u64;
                             header.set_uid(map_id(uid, &uid_maps, &mut uid_map_cache, "uid"));
                             header.set_gid(map_id(gid, &gid_maps, &mut gid_map_cache, "gid"));
+                            let inode = metadata.st_ino();
                             if type_bits == libc::S_IFREG {
-                                bytes_count += metadata.st_size();
-                                header.set_size(metadata.st_size());
-                                header.set_entry_type(EntryType::Regular);
-                                if let Ok(file) = File::open(entry.path()) {
+                                if metadata.st_nlink() > 1 && hardlinks.contains_key(&inode) {
+                                    let previous_name = hardlinks.get(&inode).unwrap();
+                                    header.set_size(0);
+                                    header.set_entry_type(EntryType::Link);
                                     builder
-                                        .append_data(&mut header, entry_path, file)
-                                        .unwrap_or_else(|_| panic!("Could not append file: path={entry_path}"));
+                                        .append_link(&mut header, entry_path, previous_name)
+                                        .unwrap_or_else(|_| panic!("Could not append link: path={entry_path}"));
+                                    hardlinks_count += 1;
                                 } else {
-                                    panic!("Could not read file: uid={uid} gid={gid} mode=Oo{mode_bits:o} path={entry_path}");
+                                    bytes_count += metadata.st_size();
+                                    header.set_size(metadata.st_size());
+                                    header.set_entry_type(EntryType::Regular);
+                                    if let Ok(file) = File::open(entry.path()) {
+                                        builder
+                                            .append_data(&mut header, entry_path, file)
+                                            .unwrap_or_else(|_| panic!("Could not append file: path={entry_path}"));
+                                    } else {
+                                        panic!("Could not read file: uid={uid} gid={gid} mode=Oo{mode_bits:o} path={entry_path}");
+                                    }
+                                    if metadata.st_nlink() > 1 {
+                                        hardlinks.insert(inode, entry_path.to_string());
+                                    }
                                 }
                                 next_dirs_to_skip.insert(String::from(entry_path));
                                 false
@@ -194,7 +209,7 @@ fn main() {
                     .unwrap();
                 let layer_duration = layer_start_time.elapsed().as_secs_f64();
                 eprintln!(
-                    "Exported layer: path={layer_dir_str} entries={entries_count} bytes={bytes_count} secs={layer_duration:.1}s"
+                    "Exported layer: path={layer_dir_str} entries={entries_count} hardlinks={hardlinks_count} bytes={bytes_count} secs={layer_duration:.1}s"
                 );
                 files_to_skip.extend(next_files_to_skip);
                 next_files_to_skip = patricia_tree::PatriciaSet::new();
