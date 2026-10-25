@@ -125,6 +125,7 @@ fn main() {
                 let mut bytes_count = 0u64;
                 let layer_start_time = Instant::now();
                 walkdir::WalkDir::new(layer_dir.clone())
+                    .sort_by_file_name()
                     .into_iter()
                     .filter_entry(|entry| {
                         let entry_path = entry.path().strip_prefix(&layer_dir).unwrap().to_str().unwrap();
